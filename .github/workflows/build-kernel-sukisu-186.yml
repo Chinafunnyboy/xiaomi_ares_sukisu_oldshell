@@ -1,11 +1,13 @@
 name: Build Kernel -- ReSukiSU + SUSFS on MiCode ares-r-oss (4.14.186)
 
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       SUKISU_BRANCH:
         description: 'ReSukiSU branch'
-        required: true
+        required: false
         default: 'main'
 
 jobs:
@@ -71,6 +73,7 @@ jobs:
         run: |
           echo DATE=$(date +%F) >> $GITHUB_ENV
           export BRANCH=${{ inputs.SUKISU_BRANCH }}
+          if [ -z "$BRANCH" ]; then BRANCH=main; fi
           curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash -s $BRANCH
           cd ./KernelSU
           export KSU_VERSION=$(expr $(/usr/bin/git rev-list --count main) "+" 30000 "+" 700)
