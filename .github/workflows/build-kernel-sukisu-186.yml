@@ -1,16 +1,27 @@
-name: Build Kernel -- ReSukiSU + SUSFS on MiCode ares-r-oss (4.14.186)
+name: Build Kernel -- SukiSU with susfs (ares 4.14.186 / T branch)
 
 on:
   workflow_dispatch:
     inputs:
-      SUKISU_BRANCH:
-        description: 'ReSukiSU branch'
+      enable_feature_kpm:
+        description: "是否启用kpm (需要开启susfs)"
         required: false
+        default: false
+        type: boolean
+      SOURCECODE_BRANCH:
+        description: '源码分支名称或修订版'
+        required: true
+        default: 'T'
+        type: string
+      SUKISU_BRANCH:
+        description: 'ReSukiSU 分支名称或修订版'
+        required: true
         default: 'main'
+        type: string
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-latest
     env:
       CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
       CCACHE_NOHASHDIR: "true"
@@ -19,7 +30,7 @@ jobs:
       CCACHE_MAXSIZE: 8G
     strategy:
       fail-fast: false
-    name: Build Kernel for K40GE (186)
+    name: Build Kernel for K40GE
     steps:
       - name: Maximize build space
         uses: easimon/maximize-build-space@master
@@ -38,40 +49,36 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /home/runner/.ccache
-          key: ccache-186-${{ github.ref }}
+          key: ccache-${{ runner.os }}-${{ github.ref }}
           restore-keys: |
-            ccache-186-
+            ccache-${{ runner.os }}-
 
-      - uses: actions/checkout@v5
-
-      - name: Get Kernel Source Code (MiCode ares-r-oss = 4.14.186, ares stock)
+      - name: Checkout build assets (Patches + Magiskboot) from MerCuJerry/xiaomi_ares_sukisu
         uses: actions/checkout@v5
         with:
-          repository: MiCode/Xiaomi_Kernel_OpenSource
-          ref: ares-r-oss
-          path: kernel
+          repository: MerCuJerry/xiaomi_ares_sukisu
+          ref: main
 
+      - name: Get Kernel Source Code (ares 4.14.186 clean tree)
+        uses: actions/checkout@v5
+        with:
+          repository: MerCuJerry/android_kernel_aresin
+          ref: ${{ inputs.SOURCECODE_BRANCH }}
+          path: kernel
+      
       - name: Setup Cross-compile toolchain
         run: |
-          sudo apt update
-          # binutils for aarch64 + arm32 (arm32 needed for CONFIG_COMPAT vdso32)
-          sudo apt install -y binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi gcc-aarch64-linux-gnu
-          # Clang 14 is the period-appropriate compiler for the 4.14.186 kernel.
-          # Modern clang (23) rejects several 4.14-era asm/C constructs (VDSO macro
-          # "too many positional arguments", -no-integrated-as, stack-protector check).
-          # Clang 14 + external binutils GAS matches what 4.14 was originally built with.
-          # We run on ubuntu-22.04 (jammy), whose universe repo ships clang-14 natively,
-          # so we install it directly. (apt.llvm.org no longer serves LLVM 14 for
-          # Ubuntu 24.04/noble, which is why the previous llvm.sh approach 404'd.)
-          sudo apt install -y clang-14 lld-14
-          clang-14 --version
-
+          mkdir -p toolchain
+          cd toolchain
+          wget -q https://github.com/Mandi-Sa/clang/releases/download/amd64-kernel-arm_static-23/llvm23.0.0-binutils2.45.1_amd64-kernel-arm_static-20260224.7z
+          7za x llvm23.0.0-binutils2.45.1_amd64-kernel-arm_static-20260224.7z
+          rm llvm23.0.0-binutils2.45.1_amd64-kernel-arm_static-20260224.7z
+      
       - name: Set up ReSukiSU
         working-directory: kernel
         run: |
           echo DATE=$(date +%F) >> $GITHUB_ENV
           export BRANCH=${{ inputs.SUKISU_BRANCH }}
-          if [ -z "$BRANCH" ]; then BRANCH=main; fi
           curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash -s $BRANCH
           cd ./KernelSU
           export KSU_VERSION=$(expr $(/usr/bin/git rev-list --count main) "+" 30000 "+" 700)
@@ -84,121 +91,75 @@ jobs:
           repository: SukiSU-Ultra/SukiSU_patch
           path: sukisu_patch
 
-      - name: Get susfs patch (4.14)
+      - name: Get susfs patch
         uses: actions/checkout@v5
         with:
           repository: JackA1ltman/NonGKI_Kernel_Build_2nd
+          sparse-checkout: Patches/Patch
           ref: mainline
           path: susfs_patch
-          fetch-depth: 1
 
-      - name: Patch Kernel (SUSFS for 4.14.186)
+      - name: Patch Kernel
         working-directory: kernel
         run: |
-          # Strip sections that don't match MiCode 4.14.186 (they target newer 4.14.x):
-          #  - fs/proc/task_mmu.c : 4/9 hunks fail -> SUS_MAP (/proc/PID/maps hide), advanced
-          #  - fs/notify/fdinfo.c  : 1/4 hunks fail -> SUS_FD (/proc/PID/fd hide), advanced
-          # Both features are NOT enabled in ares_user_defconfig_append, so stripping them is
-          # safe; core SUSFS (open/exec/stat/mount/path/kstat) still applies fully.
-          python3 - <<'PY'
-          import re, os
-          ws = os.environ['GITHUB_WORKSPACE']
-          p = os.path.join(ws, 'susfs_patch', 'Patches', 'Patch', 'susfs_patch_to_4.14.patch')
-          t=open(p).read()
-          t=re.sub(r"diff --git a/fs/proc/task_mmu\.c.*?(?=diff --git a/|\Z)", "", t, flags=re.S)
-          t=re.sub(r"diff --git a/fs/notify/fdinfo\.c.*?(?=diff --git a/|\Z)", "", t, flags=re.S)
-          open(p,'w').write(t)
-          print('stripped task_mmu.c + fdinfo.c sections from susfs_patch_to_4.14.patch')
-          PY
           patch -p1 < $GITHUB_WORKSPACE/Patches/susfs-syscall-hooks.patch
           patch -p1 < $GITHUB_WORKSPACE/Patches/static-symbol-export.patch
-          patch -p1 < $GITHUB_WORKSPACE/susfs_patch/Patches/Patch/susfs_patch_to_4.14.patch
-          # We intentionally KEEP the kernel's default "-no-integrated-as" so clang offloads
-          # assembly to the external aarch64-linux-gnu-as (binutils GAS, installed via apt).
-          # Clang 14 + binutils GAS handles the 4.14 VDSO gettimeofday.S macro that modern clang's
-          # integrated assembler rejects ("too many positional arguments").
-          #
-          # FIX clang cross-assembler lookup: 4.14's Makefile sets
-          #   CLANG_FLAGS += --prefix=$(GCC_TOOLCHAIN_DIR)   # GCC_TOOLCHAIN_DIR = /usr/bin/
-          # clang then searches <prefix>/bin for the assembler -> /usr/bin/bin/aarch64-linux-gnu-as
-          # (does not exist) -> falls back to host /usr/bin/as, which rejects '-EL' and breaks
-          # scripts/mod/empty.o. Hardcode the toolchain root to /usr (Ubuntu 22.04 puts the
-          # cross binutils at /usr/bin/aarch64-linux-gnu-as) so clang finds the right assembler.
-          # We hardcode instead of using $(GCC_TOOLCHAIN) because that variable can be empty if
-          # `which aarch64-linux-gnu-elfedit` fails, which would leave --gcc-toolchain broken too.
-          sed -i 's#--prefix=$(GCC_TOOLCHAIN_DIR)#--prefix=/usr#' Makefile
-          sed -i 's#--gcc-toolchain=$(GCC_TOOLCHAIN)#--gcc-toolchain=/usr#' Makefile
-          grep -n 'CLANG_FLAGS.*--prefix\|CLANG_FLAGS.*gcc-toolchain' Makefile || true
-          # Disable per-subdirectory -Werror EVERYWHERE. MediaTek vendor drivers
-          # (mm/, drivers/devfreq/helio-dvfsrc-v3, sound/soc/mediatek/common_int,
-          # drivers/gpu/drm/mediatek, ...) promote warnings to errors via both
-          # bare `-Werror` and specific `-Werror=xxx` (e.g. -Werror=strict-prototypes),
-          # all appended to the compile command AFTER $(KCFLAGS) -- so KCFLAGS+=-Wno-error
-          # cannot override the `-Werror=xxx` ones. They turn benign warnings (from
-          # SUSFS/compiler-version differences, old-style function defs) into hard errors.
-          # Strip EVERY `-Werror` occurrence from every Makefile/Kbuild so all
-          # warnings stay warnings. This is fine for a SUSFS patch build -- we only
-          # need it to compile, not be warning-clean.
-          # NOTE: the flag appears in BOTH forms in this tree:
-          #   -Werror=implicit-int          (Makefile:936, inside $(call cc-option,...))
-          #   -Werror-implicit-function-declaration  (Makefile:422, hyphen form)
-          # A plain `s/-Werror//g` would only strip the `-Werror` prefix and leave
-          # `-implicit-function-declaration` (invalid -> clang "unknown argument").
-          # So delete `-Werror` AND every non-space char after it, covering = and - forms.
-          # CRITICAL: the char class must EXCLUDE ')' (use [^[:space:])]*) so the greedy
-          # match stops BEFORE the closing paren of `$(call cc-option,-Werror=xxx)`. A
-          # naive `[^[:space:]]*` would also eat the ')' and produce `$(call cc-option,`
-          # -> make "unterminated call to function 'call'" parse error (seen in run 30206150165).
-          find . \( -name Makefile -o -name Kbuild \) -exec sed -i -E 's/-Werror[^[:space:])]*//g' {} +
-          # MTK partner files NOT in the public OSS drop (board-customization / closed
-          # firmware blobs generated by MTK's partner tree). The DTS and touchscreen
-          # driver unconditionally #include them, so create empty stubs to let the
-          # build proceed. None of them define symbols referenced by the OSS code
-          # (verified: focaltech_spi references no fw_sample symbol), so empty is safe.
-          # NOTE: the DTS uses `#include <k6893v1_64/cust.dtsi>` (angle brackets), which
-          # is resolved by the C preprocessor against its -I search path. That path is
-          # rooted at arch/arm64/boot/dts (NOT the mediatek/ subdir), so the stub MUST
-          # live at arch/arm64/boot/dts/k6893v1_64/cust.dtsi, not under mediatek/.
-          mkdir -p arch/arm64/boot/dts/k6893v1_64
-          touch arch/arm64/boot/dts/k6893v1_64/cust.dtsi
-          # focaltech SPI touchscreen upgrade firmware (all 3 FW macros point here)
-          mkdir -p include/firmware
-          touch include/firmware/fw_sample.i
-          # NOTE: task_mmu.c (maps hide) and fdinfo.c (fd hide) sections are stripped above
-          # because they fail to apply on 4.14.186. They are advanced SUSFS features not
-          # enabled in the defconfig and not needed for core file/process hiding.
+
+      - name: Apply KernelPatch for SUSFS
+        working-directory: kernel
+        run: |
+          patch -p1 < $GITHUB_WORKSPACE/susfs_patch/Patches/Patch/susfs_patch_to_4.14.patch || true
+          patch -p1 < $GITHUB_WORKSPACE/Patches/susfs_patch_taskmmu.patch
+          if [ "${{ inputs.SOURCECODE_BRANCH }}" = "T" ]; then
+            patch -p1 < $GITHUB_WORKSPACE/Patches/susfs_patch_base.patch
+            patch -p1 < $GITHUB_WORKSPACE/Patches/susfs_patch_fdinfo.patch
+            patch -p1 < $GITHUB_WORKSPACE/Patches/susfs_patch_readdir.patch
+          elif [ "${{ inputs.SOURCECODE_BRANCH }}" = "U-dev" ]; then
+            patch -p1 < $GITHUB_WORKSPACE/Patches/susfs_patch_newuname.patch
+          fi
 
       - name: Copy defconfig
         run: |
+          if [ "${{ inputs.enable_feature_kpm }}" = "true" ]; then
+            echo "CONFIG_KALLSYMS_ALL=y" >> $GITHUB_WORKSPACE/Patches/ares_user_defconfig_append
+            echo "CONFIG_KPM=y" >> $GITHUB_WORKSPACE/Patches/ares_user_defconfig_append
+          fi
           echo "CONFIG_KSU_MANUAL_HOOK=y" >> $GITHUB_WORKSPACE/Patches/ares_user_defconfig_append
-          # Disable CC_STACKPROTECTOR_STRONG: the clang-23 static toolchain fails the
-          # kernel's -fstack-protector-strong compiler check ("not supported by compiler").
-          # NONE is a safe alternative; no effect on SUSFS / root / detection passing.
-          echo "CONFIG_CC_STACKPROTECTOR_STRONG=n" >> $GITHUB_WORKSPACE/Patches/ares_user_defconfig_append
-          echo "CONFIG_CC_STACKPROTECTOR_NONE=y" >> $GITHUB_WORKSPACE/Patches/ares_user_defconfig_append
           cat $GITHUB_WORKSPACE/Patches/ares_user_defconfig_append >> $GITHUB_WORKSPACE/kernel/arch/arm64/configs/ares_user_defconfig
-
-      - name: Build Kernel for K40GE (186)
+      
+      - name: Build Kernel for K40GE
         working-directory: kernel
         env:
           args: |+
             LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu-
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- CROSS_COMPILE_COMPAT=arm-linux-gnueabi-
-            CC=clang-14 LD=ld.lld-14 HOSTLD=ld.lld-14 O=out KCFLAGS+=-O2 KCFLAGS+=-Wno-error KCFLAGS_PERF+=-O3
+            CC=clang LD=ld.lld HOSTLD=ld.lld O=out KCFLAGS+=-O2 KCFLAGS_PERF+=-O3
         run: |
           export KBUILD_BUILD_TIMESTAMP=$(date)
-          export PATH=/usr/lib/ccache:$PATH
+          export PATH=/usr/lib/ccache:$GITHUB_WORKSPACE/toolchain/bin:$PATH
           make -j$(nproc --all) ${args} ares_user_defconfig all
-
-      - name: Gzip kernel Image
+      
+      - name: Apply KernelPatch for KPM
+        if: ${{ inputs.enable_feature_kpm }}
         working-directory: kernel/out/arch/arm64/boot
         run: |
-          gzip -c Image > Image.gz
-          ls -la Image Image.gz
+          cp $GITHUB_WORKSPACE/sukisu_patch/kpm/patch_linux .
+          chmod +x patch_linux
+          ./patch_linux
+          mv oImage Image
 
-      - name: Upload kernel Image (we pack locally with device ramdisk)
+      - name: Pack Kernel using Magiskboot
+        working-directory: Magiskboot
+        run: |
+            tar -xvf boot.tar.gz
+            chmod +x magiskboot
+            ./magiskboot unpack boot.img
+            cp $GITHUB_WORKSPACE/kernel/out/arch/arm64/boot/Image ./kernel
+            ./magiskboot repack boot.img boot_SukiSU_${{ env.KSUVER }}.img
+
+      - name: Upload repacked boot image
         uses: actions/upload-artifact@v4
         with:
-          name: K40GE_SukiSU_186_Image
-          path: kernel/out/arch/arm64/boot/Image.gz
+          name: K40GE_SukiSU_${{ env.KSUVER }}
+          path: Magiskboot/boot_SukiSU_${{ env.KSUVER }}.img
           compression-level: 9
