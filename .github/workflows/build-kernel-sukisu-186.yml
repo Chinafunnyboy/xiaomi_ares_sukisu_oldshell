@@ -10,7 +10,7 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     env:
       CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
       CCACHE_NOHASHDIR: "true"
@@ -60,9 +60,9 @@ jobs:
           # Modern clang (23) rejects several 4.14-era asm/C constructs (VDSO macro
           # "too many positional arguments", -no-integrated-as, stack-protector check).
           # Clang 14 + external binutils GAS matches what 4.14 was originally built with.
-          wget -q https://apt.llvm.org/llvm.sh
-          chmod +x llvm.sh
-          sudo ./llvm.sh 14
+          # We run on ubuntu-22.04 (jammy), whose universe repo ships clang-14 natively,
+          # so we install it directly. (apt.llvm.org no longer serves LLVM 14 for
+          # Ubuntu 24.04/noble, which is why the previous llvm.sh approach 404'd.)
           sudo apt install -y clang-14 lld-14
           clang-14 --version
 
