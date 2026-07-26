@@ -123,22 +123,7 @@ jobs:
           #    The main patch's hunks for these 4 files have drifted and conflict with
           #    T-branch; stripping them avoids partial-application that leaves broken
           #    code (undeclared identifiers like 'vma', missing BIT_SUS_MAPS macro).
-          python3 - <<'PY'
-import re
-patch_path = '$GITHUB_WORKSPACE/susfs_patch/Patches/Patch/susfs_patch_to_4.14.patch'
-# Files handled by T-branch patches — strip their diff blocks from main patch
-skip_files = {'fs/proc/base.c', 'fs/proc/task_mmu.c', 'fs/notify/fdinfo.c', 'fs/readdir.c'}
-with open(patch_path, 'r') as f:
-            content = f.read()
-# Remove diff blocks for skipped files: from 'diff --git a/FILE' to next 'diff --git' or EOF
-for sf in sorted(skip_files):
-            content = re.sub(
-                r'diff --git a/' + re.escape(sf) + r'.*?(?=diff --git a/|\Z)',
-                '', content, flags=re.DOTALL)
-with open(patch_path, 'w') as f:
-            f.write(content)
-print('Stripped overlapping file sections from main SUSFS patch')
-PY
+          echo 'aW1wb3J0IHJlCnBhdGNoX3BhdGggPSAnL3N1c2ZzX3BhdGNoL1BhdGNoZXMvUGF0Y2gvc3VzZnNfcGF0Y2hfdG9fNC4xNC5wYXRjaCcKc2tpcF9maWxlcyA9IHsnZnMvcHJvYy9iYXNlLmMnLCAnZnMvcHJvYy90YXNrX21tdS5jJywgJ2ZzL25vdGlmeS9mZGluZm8uYycsICdmcy9yZWFkZGlyLmMnfQp3aXRoIG9wZW4ocGF0Y2hfcGF0aCwgJ3InKSBhcyBmOgogICAgY29udGVudCA9IGYucmVhZCgpCmZvciBzZiBpbiBzb3J0ZWQoc2tpcF9maWxlcyk6CiAgICBjb250ZW50ID0gcmUuc3ViKAogICAgICAgIHInZGlmZiAtLWdpdCBhLycgKyByZS5lc2NhcGUoc2YpICsgcicuKj8oPz1kaWZmIC0tZ2l0IGEvfFxaKScsCiAgICAgICAgJycsIGNvbnRlbnQsIGZsYWdzPXJlLkRPVEFMTCkKd2l0aCBvcGVuKHBhdGNoX3BhdGgsICd3JykgYXMgZjoKICAgIGYud3JpdGUoY29udGVudCkKcHJpbnQoJ1N0cmlwcGVkIG92ZXJsYXBwaW5nIGZpbGVzIGZyb20gbWFpbiBTVVNGUyBwYXRjaCcpCg==' | base64 -d > /tmp/strip_susfs.py && python3 /tmp/strip_susfs.py
           # 3) Apply cleaned-up main SUSFS core patch (creates fs/susfs.c + headers +
           #    hooks in Makefile/namei/namespace/open/cmdline/fd/proc_namespace/stat/
           #    statfs/kallsyms/sys/memory/avc). No || true needed — should be clean.
