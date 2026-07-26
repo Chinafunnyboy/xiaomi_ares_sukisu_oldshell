@@ -1,0 +1,124 @@
+name: Build Kernel -- ReSukiSU + SUSFS on MiCode ares-r-oss (4.14.186)
+
+on:
+  workflow_dispatch:
+    inputs:
+      SUKISU_BRANCH:
+        description: 'ReSukiSU branch'
+        required: true
+        default: 'main'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
+      CCACHE_NOHASHDIR: "true"
+      CCACHE_HARDLINK: "true"
+      CCACHE_DIR: /home/runner/.ccache
+      CCACHE_MAXSIZE: 8G
+    strategy:
+      fail-fast: false
+    name: Build Kernel for K40GE (186)
+    steps:
+      - name: Maximize build space
+        uses: easimon/maximize-build-space@master
+        with:
+          root-reserve-mb: 8192
+          temp-reserve-mb: 2048
+          remove-dotnet: 'true'
+          remove-android: 'true'
+          remove-haskell: 'true'
+          remove-codeql: 'true'
+
+      - name: Install Package
+        run: sudo apt update && sudo apt install -y p7zip-full git ccache
+
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: /home/runner/.ccache
+          key: ccache-186-${{ github.ref }}
+          restore-keys: |
+            ccache-186-
+
+      - uses: actions/checkout@v5
+
+      - name: Get Kernel Source Code (MiCode ares-r-oss = 4.14.186, ares stock)
+        uses: actions/checkout@v5
+        with:
+          repository: MiCode/Xiaomi_Kernel_OpenSource
+          ref: ares-r-oss
+          path: kernel
+
+      - name: Setup Cross-compile toolchain
+        run: |
+          mkdir -p toolchain
+          cd toolchain
+          wget -q https://github.com/Mandi-Sa/clang/releases/download/amd64-kernel-arm_static-23/llvm23.0.0-binutils2.45.1_amd64-kernel-arm_static-20260224.7z
+          7za x llvm23.0.0-binutils2.45.1_amd64-kernel-arm_static-20260224.7z
+          rm llvm23.0.0-binutils2.45.1_amd64-kernel-arm_static-20260224.7z
+
+      - name: Set up ReSukiSU
+        working-directory: kernel
+        run: |
+          echo DATE=$(date +%F) >> $GITHUB_ENV
+          export BRANCH=${{ inputs.SUKISU_BRANCH }}
+          curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash -s $BRANCH
+          cd ./KernelSU
+          export KSU_VERSION=$(expr $(/usr/bin/git rev-list --count main) "+" 30000 "+" 700)
+          echo "KSUVER=$KSU_VERSION" >> $GITHUB_ENV
+          sed -i "s/DKSU_VERSION=12800/DKSU_VERSION=${KSU_VERSION}/" kernel/Makefile
+
+      - name: Get SukiSU Patches
+        uses: actions/checkout@v5
+        with:
+          repository: SukiSU-Ultra/SukiSU_patch
+          path: sukisu_patch
+
+      - name: Get susfs patch (4.14)
+        uses: actions/checkout@v5
+        with:
+          repository: JackA1ltman/NonGKI_Kernel_Build_2nd
+          sparse-checkout: Patches/Patch
+          ref: mainline
+          path: susfs_patch
+
+      - name: Patch Kernel (SUSFS for 4.14.186)
+        working-directory: kernel
+        run: |
+          patch -p1 < $GITHUB_WORKSPACE/Patches/susfs-syscall-hooks.patch
+          patch -p1 < $GITHUB_WORKSPACE/Patches/static-symbol-export.patch
+          patch -p1 < $GITHUB_WORKSPACE/susfs_patch/Patches/Patch/susfs_patch_to_4.14.patch
+          patch -p1 < $GITHUB_WORKSPACE/Patches/susfs_patch_taskmmu.patch
+          patch -p1 < $GITHUB_WORKSPACE/Patches/susfs_patch_newuname.patch
+
+      - name: Copy defconfig
+        run: |
+          echo "CONFIG_KSU_MANUAL_HOOK=y" >> $GITHUB_WORKSPACE/Patches/ares_user_defconfig_append
+          cat $GITHUB_WORKSPACE/Patches/ares_user_defconfig_append >> $GITHUB_WORKSPACE/kernel/arch/arm64/configs/ares_user_defconfig
+
+      - name: Build Kernel for K40GE (186)
+        working-directory: kernel
+        env:
+          args: |+
+            LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu-
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- CROSS_COMPILE_COMPAT=arm-linux-gnueabi-
+            CC=clang LD=ld.lld HOSTLD=ld.lld O=out KCFLAGS+=-O2 KCFLAGS_PERF+=-O3
+        run: |
+          export KBUILD_BUILD_TIMESTAMP=$(date)
+          export PATH=/usr/lib/ccache:$GITHUB_WORKSPACE/toolchain/bin:$PATH
+          make -j$(nproc --all) ${args} ares_user_defconfig all
+
+      - name: Gzip kernel Image
+        working-directory: kernel/out/arch/arm64/boot
+        run: |
+          gzip -c Image > Image.gz
+          ls -la Image Image.gz
+
+      - name: Upload kernel Image (we pack locally with device ramdisk)
+        uses: actions/upload-artifact@v4
+        with:
+          name: K40GE_SukiSU_186_Image
+          path: kernel/out/arch/arm64/boot/Image.gz
+          compression-level: 9
