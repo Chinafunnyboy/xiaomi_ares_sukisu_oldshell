@@ -80,9 +80,9 @@ jobs:
         uses: actions/checkout@v5
         with:
           repository: JackA1ltman/NonGKI_Kernel_Build_2nd
-          sparse-checkout: Patches/Patch
           ref: mainline
           path: susfs_patch
+          fetch-depth: 1
 
       - name: Patch Kernel (SUSFS for 4.14.186)
         working-directory: kernel
