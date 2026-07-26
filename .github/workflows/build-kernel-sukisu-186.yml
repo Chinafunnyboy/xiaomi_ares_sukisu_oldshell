@@ -109,7 +109,9 @@ jobs:
         working-directory: kernel
         run: |
           # 1) T-branch / tree-specific SUSFS patches FIRST on pristine 4.14.186 tree.
-          #    These are authoritative for ares T branch.
+          #    These are ported to the current SUSFS API (SUSFS_IS_INODE_SUS_MAP macro
+          #    instead of the old BIT_SUS_MAPS / i_mapping->flags API) so they match the
+          #    main patch that follows.
           patch -p1 < $GITHUB_WORKSPACE/Patches/susfs_patch_taskmmu.patch
           if [ "${{ inputs.SOURCECODE_BRANCH }}" = "T" ]; then
             patch -p1 < $GITHUB_WORKSPACE/Patches/susfs_patch_base.patch
@@ -118,16 +120,15 @@ jobs:
           elif [ "${{ inputs.SOURCECODE_BRANCH }}" = "U-dev" ]; then
             patch -p1 < $GITHUB_WORKSPACE/Patches/susfs_patch_newuname.patch
           fi
-          # 2) Preprocess main SUSFS patch: strip hunks for files already handled by
-          #    T-branch patches above (base.c, task_mmu.c, fdinfo.c, readdir.c).
-          #    The main patch's hunks for these 4 files have drifted and conflict with
-          #    T-branch; stripping them avoids partial-application that leaves broken
-          #    code (undeclared identifiers like 'vma', missing BIT_SUS_MAPS macro).
-          echo 'aW1wb3J0IHJlCnBhdGNoX3BhdGggPSAnL3N1c2ZzX3BhdGNoL1BhdGNoZXMvUGF0Y2gvc3VzZnNfcGF0Y2hfdG9fNC4xNC5wYXRjaCcKc2tpcF9maWxlcyA9IHsnZnMvcHJvYy9iYXNlLmMnLCAnZnMvcHJvYy90YXNrX21tdS5jJywgJ2ZzL25vdGlmeS9mZGluZm8uYycsICdmcy9yZWFkZGlyLmMnfQp3aXRoIG9wZW4ocGF0Y2hfcGF0aCwgJ3InKSBhcyBmOgogICAgY29udGVudCA9IGYucmVhZCgpCmZvciBzZiBpbiBzb3J0ZWQoc2tpcF9maWxlcyk6CiAgICBjb250ZW50ID0gcmUuc3ViKAogICAgICAgIHInZGlmZiAtLWdpdCBhLycgKyByZS5lc2NhcGUoc2YpICsgcicuKj8oPz1kaWZmIC0tZ2l0IGEvfFxaKScsCiAgICAgICAgJycsIGNvbnRlbnQsIGZsYWdzPXJlLkRPVEFMTCkKd2l0aCBvcGVuKHBhdGNoX3BhdGgsICd3JykgYXMgZjoKICAgIGYud3JpdGUoY29udGVudCkKcHJpbnQoJ1N0cmlwcGVkIG92ZXJsYXBwaW5nIGZpbGVzIGZyb20gbWFpbiBTVVNGUyBwYXRjaCcpCg==' | base64 -d > /tmp/strip_susfs.py && python3 /tmp/strip_susfs.py
-          # 3) Apply cleaned-up main SUSFS core patch (creates fs/susfs.c + headers +
-          #    hooks in Makefile/namei/namespace/open/cmdline/fd/proc_namespace/stat/
-          #    statfs/kallsyms/sys/memory/avc). No || true needed — should be clean.
-          patch -p1 < $GITHUB_WORKSPACE/susfs_patch/Patches/Patch/susfs_patch_to_4.14.patch
+          # 2) Main SUSFS core patch LAST with || true. Its hunks for the 4 tree-specific
+          #    files (base.c/task_mmu.c/fdinfo.c/readdir.c) fail harmlessly because
+          #    T-branch already handled them; all other files (fs/susfs.c, headers,
+          #    Makefile, namei, namespace, open, cmdline, fd, proc_namespace, stat,
+          #    statfs, kallsyms, sys, memory, avc) apply normally.
+          patch -p1 < $GITHUB_WORKSPACE/susfs_patch/Patches/Patch/susfs_patch_to_4.14.patch || true
+          # 3) Ensure fdinfo.c (and base.c as safety) include linux/susfs_def.h so the
+          #    SUSFS_IS_INODE_SUS_MAP macro / susfs_is_current_proc_umounted are declared.
+          python3 $GITHUB_WORKSPACE/scripts/fix_susfs_includes.py
 
       - name: Copy defconfig
         run: |
