@@ -1,4 +1,4 @@
-name: Build Kernel -- K40GE KernelSU/SukiSU with SUSFS (ares 4.14.186 / T)
+name: Build Kernel -- K40GE ReSukiSU with SUSFS (ares 4.14.186 / U-dev)
 
 on:
   workflow_dispatch:
@@ -6,12 +6,7 @@ on:
       SOURCECODE_BRANCH:
         description: 'Kernel source branch'
         required: true
-        default: 'T'
-        type: string
-      KERNELSU_BRANCH:
-        description: 'KernelSU branch (rsuntk susfs-main has SUSFS built-in)'
-        required: true
-        default: 'staging/susfs-main'
+        default: 'U-dev'
         type: string
 
 jobs:
@@ -38,7 +33,7 @@ jobs:
           remove-codeql: 'true'
 
       - name: Install Package
-        run: sudo apt update && sudo apt install -y p7zip-full git ccache build-essential flex bison libssl-dev libelf-dev bc python3
+        run: sudo apt update && sudo apt install -y p7zip-full git ccache
 
       - name: Restore ccache
         uses: actions/cache@v4
@@ -53,11 +48,12 @@ jobs:
         with:
           repository: MerCuJerry/xiaomi_ares_sukisu
           ref: main
+          path: assets
 
-      - name: Get Kernel Source Code (Tkpointz/android_kernel_aresin @ T, 4.14.186)
+      - name: Get Kernel Source Code (MerCuJerry/android_kernel_aresin @ U-dev, 4.14.186)
         uses: actions/checkout@v4
         with:
-          repository: Tkpointz/android_kernel_aresin
+          repository: MerCuJerry/android_kernel_aresin
           ref: ${{ inputs.SOURCECODE_BRANCH }}
           path: kernel
 
@@ -69,27 +65,29 @@ jobs:
           7za x llvm23.0.0-binutils2.45.1_amd64-kernel-arm_static-20260224.7z
           rm llvm23.0.0-binutils2.45.1_amd64-kernel-arm_static-20260224.7z
 
-      - name: Set up KernelSU (rsuntk/KernelSU staging/susfs-main, SUSFS built-in core)
+      - name: Set up ReSukiSU (SukiSU-Ultra fork, SUSFS built-in)
         working-directory: kernel
         run: |
           echo DATE=$(date +%F) >> $GITHUB_ENV
-          curl -sSL "https://raw.githubusercontent.com/rsuntk/KernelSU/refs/heads/main/kernel/setup.sh" | bash -s ${{ inputs.KERNELSU_BRANCH }}
+          curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash
           cd ./KernelSU
-          KSU_VER=$(expr $(/usr/bin/git rev-list --count HEAD) + 10200)
-          echo "KSUVER=$KSU_VER" >> $GITHUB_ENV
+          KSU_VERSION=$(expr $(/usr/bin/git rev-list --count main) "+" 30000 "+" 700)
+          echo "KSUVER=$KSU_VERSION" >> $GITHUB_ENV
+          sed -i "s/DKSU_VERSION=12800/DKSU_VERSION=${KSU_VERSION}/" ../Makefile
 
-      - name: Apply SUSFS (simonpunk/susfs4ksu @ kernel-4.14, file copy - no patch hunk conflicts)
+      - name: Patch Kernel (MerCuJerry verified hooks)
         working-directory: kernel
         run: |
-          git clone --depth=1 -b kernel-4.14 https://gitlab.com/simonpunk/susfs4ksu.git susfs4ksu
-          cp susfs4ksu/kernel_patches/fs/* fs/
-          cp susfs4ksu/kernel_patches/include/linux/* include/linux/
+          patch -p1 < $GITHUB_WORKSPACE/assets/Patches/resukisu-scopemin-hooks.patch
+          patch -p1 < $GITHUB_WORKSPACE/assets/Patches/static-symbol-export.patch
 
       - name: Append KSU/SUSFS config to defconfig
         run: |
           DEF=$GITHUB_WORKSPACE/kernel/arch/arm64/configs/ares_user_defconfig
           echo "CONFIG_KSU=y" >> $DEF
           echo "CONFIG_KSU_MANUAL_HOOK=y" >> $DEF
+          echo "KSU_MULTI_MANAGER_SUPPORT=y" >> $DEF
+          echo "KSU_FULL_NAME_FORMAT=\"%TAG_NAME%-%KSU_VERSION%@%REPO_NAME%\"" >> $DEF
           echo "CONFIG_KSU_SUSFS=y" >> $DEF
           echo "CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y" >> $DEF
           echo "CONFIG_KSU_SUSFS_SUS_PATH=y" >> $DEF
@@ -114,21 +112,22 @@ jobs:
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- CROSS_COMPILE_COMPAT=arm-linux-gnueabi-
             CC=clang LD=ld.lld HOSTLD=ld.lld O=out KCFLAGS+=-O2 KCFLAGS_PERF+=-O3
         run: |
+          export KBUILD_BUILD_TIMESTAMP=$(date)
           export PATH=/usr/lib/ccache:$GITHUB_WORKSPACE/toolchain/bin:$PATH
           make -j$(nproc --all) ${args} ares_user_defconfig all
 
       - name: Pack Kernel using Magiskboot
-        working-directory: Magiskboot
+        working-directory: assets/Magiskboot
         run: |
           tar -xvf boot.tar.gz
           chmod +x magiskboot
           ./magiskboot unpack boot.img
           cp $GITHUB_WORKSPACE/kernel/out/arch/arm64/boot/Image ./kernel
-          ./magiskboot repack boot.img boot_SukiSU_${{ env.KSUVER }}.img
+          ./magiskboot repack boot.img boot_ReSukiSU_${{ env.KSUVER }}.img
 
       - name: Upload repacked boot image
         uses: actions/upload-artifact@v4
         with:
-          name: K40GE_SukiSU_${{ env.KSUVER }}
-          path: Magiskboot/boot_SukiSU_${{ env.KSUVER }}.img
+          name: K40GE_ReSukiSU_${{ env.KSUVER }}
+          path: assets/Magiskboot/boot_ReSukiSU_${{ env.KSUVER }}.img
           compression-level: 9
