@@ -1,4 +1,4 @@
-name: Build Kernel -- K40GE (ares) KernelSU + SUSFS (4.14.186 / U-dev)
+name: Build Kernel -- K40GE (ares) ReSukiSU + SUSFS (4.14.186 / U-dev)
 
 on:
   workflow_dispatch:
@@ -17,6 +17,9 @@ jobs:
       CCACHE_NOHASHDIR: "true"
       CCACHE_HARDLINK: "true"
     steps:
+      - name: Checkout build scripts (injector)
+        uses: actions/checkout@v4
+
       - name: Maximize build space
         uses: easimon/maximize-build-space@master
         with:
@@ -49,6 +52,8 @@ jobs:
         working-directory: device_kernel
         run: |
           DEF=./arch/arm64/configs/ares_user_defconfig
+          # strip any pre-existing conflicting lines so our appends win cleanly
+          sed -i '/CONFIG_KSU=/d; /CONFIG_KSU_SUSFS/d; /CONFIG_KALLSYMS_ALL/d; /CONFIG_THREAD_INFO_IN_TASK/d' "$DEF"
           echo "CONFIG_KSU=y" >> $DEF
           echo "CONFIG_KSU_SUSFS=y" >> $DEF
           echo "CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y" >> $DEF
@@ -65,45 +70,10 @@ jobs:
           echo "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y" >> $DEF
           echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y" >> $DEF
           echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y" >> $DEF
-
-      - name: Set AnyKernel3 + KernelSU + SUSFS sources
-        working-directory: device_kernel
-        run: |
-          git clone https://github.com/osm0sis/AnyKernel3.git -b master Anykernel3 --depth=1
-          git clone https://github.com/KernelSU/KernelSU.git -b main KernelSU
-          ln -sf "$(realpath --relative-to="$(pwd)/drivers" "$(pwd)/KernelSU/kernel")" "kernelsu"
-          grep -q "kernelsu" "$(pwd)/drivers/Makefile" || printf "\nobj-\$(CONFIG_KSU) += kernelsu/\n" >> "$(pwd)/drivers/Makefile"
-          grep -q "source \"drivers/kernelsu/Kconfig\"" "$(pwd)/drivers/Kconfig" || sed -i "/endmenu/i\source \"drivers/kernelsu/Kconfig\"" "$(pwd)/drivers/Kconfig"
-          KSU_VERSION=$(cd KernelSU && expr $(/usr/bin/git rev-list --count HEAD) + 10200)
-          echo "KSUVER=$KSU_VERSION" >> $GITHUB_ENV
-          git clone https://gitlab.com/simonpunk/susfs4ksu.git -b kernel-${KERNEL_VERSION} susfs4ksu --depth=1
-          cp susfs4ksu/kernel_patches/fs/* fs/
-          cp susfs4ksu/kernel_patches/include/linux/* include/linux/
-
-      - name: Patch Kernel for no-kprobe (add ksu_handle_* hook call sites)
-        working-directory: device_kernel
-        run: |
-          git clone https://github.com/JackA1ltman/NonGKI_Kernel_Patches.git -b mi_kernel NonGKI_Kernel_Patches --depth=1
-          cp NonGKI_Kernel_Patches/patches.sh ./
-          bash patches.sh
-
-      - name: Patch Kernel of SUSFS (feature code + KSU-side enable)
-        working-directory: device_kernel
-        run: |
-          cp susfs4ksu/kernel_patches/50_add_susfs_in_kernel-${KERNEL_VERSION}.patch ./
-          patch -p1 < 50_add_susfs_in_kernel-${KERNEL_VERSION}.patch || true
-          cp susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch ./KernelSU/
-          cd KernelSU
-          patch -p1 < 10_enable_susfs_for_ksu.patch || true
-          cd ..
-
-      - name: Fixed Kernel Patch (ares / K40G HyperOS device-specific)
-        working-directory: device_kernel
-        run: |
-          for p in susfs_158_fixed.patch susfs_155_fixed.patch; do
-            cp NonGKI_Kernel_Patches/k40g_hyper/$p ./ 2>/dev/null || continue
-            if patch -p1 < $p; then echo "applied $p"; break; else echo "trying next"; rm -f $p; fi
-          done
+          # avoid the mandatory selinux static-symbol exports when KALLSYMS_ALL is on
+          echo "CONFIG_KALLSYMS_ALL=y" >> $DEF
+          # required by config KSU_SUSFS (depends on THREAD_INFO_IN_TASK && 64BIT)
+          echo "CONFIG_THREAD_INFO_IN_TASK=y" >> $DEF
 
       - name: Setup Cross-compile toolchain (Mandi-Sa clang 23 static, proven for ares 4.14)
         run: |
@@ -113,16 +83,125 @@ jobs:
           7za x llvm23.0.0-binutils2.45.1_amd64-kernel-arm_static-20260224.7z
           rm llvm23.0.0-binutils2.45.1_amd64-kernel-arm_static-20260224.7z
 
+      - name: Clone ReSukiSU (provides config KSU_SUSFS + 7 ksu_handle_* definitions)
+        working-directory: device_kernel
+        run: |
+          git clone https://github.com/ReSukiSU/ReSukiSU.git -b main KernelSU
+          ln -sf "$(realpath --relative-to="$(pwd)/drivers" "$(pwd)/KernelSU/kernel")" "kernelsu"
+          grep -q "kernelsu" "$(pwd)/drivers/Makefile" || printf "\nobj-\$(CONFIG_KSU) += kernelsu/\n" >> "$(pwd)/drivers/Makefile"
+          grep -q "source \"drivers/kernelsu/Kconfig\"" "$(pwd)/drivers/Kconfig" || sed -i "/endmenu/i\source \"drivers/kernelsu/Kconfig\"" "$(pwd)/drivers/Kconfig"
+          KSU_VERSION=$(cd KernelSU && expr 30000 + $(/usr/bin/git rev-list --count HEAD) + 700)
+          echo "KSUVER=$KSU_VERSION" >> $GITHUB_ENV
+
+      - name: Clone simonpunk susfs4ksu and copy SUSFS core + headers
+        working-directory: device_kernel
+        run: |
+          git clone https://gitlab.com/simonpunk/susfs4ksu.git -b kernel-${KERNEL_VERSION} susfs4ksu --depth=1
+          cp susfs4ksu/kernel_patches/fs/* fs/
+          cp susfs4ksu/kernel_patches/include/linux/* include/linux/
+
+      - name: Patch kernel for SUSFS integration (fs/Makefile, dcache, namei, namespace, open, read_write, stat)
+        working-directory: device_kernel
+        run: |
+          cp susfs4ksu/kernel_patches/50_add_susfs_in_kernel-${KERNEL_VERSION}.patch ./
+          patch -p1 --fuzz=3 < 50_add_susfs_in_kernel-${KERNEL_VERSION}.patch
+          echo "--- fs/Makefile susfs line ---"
+          grep -n "susfs" fs/Makefile || echo "[!] susfs NOT added to fs/Makefile"
+
+      - name: Inject 7 ksu_handle_* SUSFS call sites (ReSukiSU inline-hook path)
+        working-directory: device_kernel
+        run: |
+          cat > apply_ksu_hooks.py <<'PYEOF'
+#!/usr/bin/env python3
+# Apply ReSukiSU SUSFS (inline-hook path) manual call sites to the ares 4.14 kernel.
+# Called from the kernel source root. Adds the 7 ksu_handle_* call sites required by
+# kernel/tools/inline_hook_check.mk, guarded by CONFIG_KSU. We do NOT use
+# ksu_init_rc_hook / ksu_input_hook (forbidden in the SUSFS inline path). The handlers
+# internally check KSU readiness, so an unconditional call is safe.
+import os, sys
+
+ROOT = os.getcwd()
+HOOKS = [
+    ("fs/stat.c", "SYSCALL_DEFINE4(newfstatat,",
+     "extern int ksu_handle_stat(int *dfd, const char __user **filename_user, int *flags);",
+     "ksu_handle_stat(&dfd, &filename, &flag);"),
+    ("fs/stat.c", "SYSCALL_DEFINE2(newfstat,",
+     "extern void ksu_handle_newfstat_ret(unsigned int *fd, struct stat __user **statbuf_ptr);",
+     "ksu_handle_newfstat_ret(&fd, &statbuf);"),
+    ("fs/stat.c", "SYSCALL_DEFINE2(fstat64,",
+     "extern void ksu_handle_fstat64_ret(unsigned long *fd, struct stat64 __user **statbuf_ptr);",
+     "ksu_handle_fstat64_ret(&fd, &statbuf);"),
+    ("kernel/sys.c", "SYSCALL_DEFINE3(setresuid,",
+     "extern int ksu_handle_setresuid(uid_t ruid, uid_t euid, uid_t suid);",
+     "(void)ksu_handle_setresuid(ruid, euid, suid);"),
+    ("kernel/reboot.c", "SYSCALL_DEFINE4(reboot,",
+     "extern int ksu_handle_sys_reboot(int magic1, int magic2, unsigned int cmd, void __user **arg);",
+     "ksu_handle_sys_reboot(magic1, magic2, cmd, &arg);"),
+    ("drivers/input/input.c", "static void input_handle_event(",
+     "extern int ksu_handle_input_handle_event(unsigned int *type, unsigned int *code, int *value);",
+     "ksu_handle_input_handle_event(&type, &code, &value);"),
+    ("fs/exec.c", "static int do_execveat_common(",
+     "extern int ksu_handle_execveat(int *fd, struct filename **filename_ptr, void *argv, void *envp, int *flags);",
+     "ksu_handle_execveat(&fd, &filename, &argv, &envp, &flags);"),
+    ("fs/open.c", "SYSCALL_DEFINE3(faccessat,",
+     "extern int ksu_handle_faccessat(int *dfd, const char __user **filename_user, int *mode, int *__unused_flags);",
+     "ksu_handle_faccessat(&dfd, &filename, &mode, NULL);"),
+    ("fs/read_write.c", "SYSCALL_DEFINE3(read,",
+     "extern int ksu_handle_sys_read(unsigned int fd, char __user **buf_ptr, size_t *count_ptr);",
+     "ksu_handle_sys_read(fd, &buf, &count);"),
+]
+G_OPEN = "#ifdef CONFIG_KSU"
+G_CLOSE = "#endif"
+
+def inject(path, sig, extern_decl, call):
+    full = os.path.join(ROOT, path)
+    if not os.path.exists(full):
+        print("[!] SKIP (no file): " + path); return False
+    with open(full, "r", encoding="utf-8", errors="replace") as f:
+        lines = f.read().split("\n")
+    call_sym = call.split("(")[0].strip()
+    for ln in lines:
+        if call_sym in ln:
+            print("[=] already present, skip: " + path + " (" + call_sym + ")"); return True
+    si = None
+    for i, ln in enumerate(lines):
+        if sig in ln:
+            si = i; break
+    if si is None:
+        print("[!] signature not found in " + path + ": " + sig); return False
+    bi = None
+    for j in range(si, min(si + 12, len(lines))):
+        if "{" in lines[j]:
+            bi = j; break
+    if bi is None:
+        print("[!] brace not found after sig in " + path); return False
+    extern_block = [G_OPEN, "\t" + extern_decl, G_CLOSE, ""]
+    call_block = [G_OPEN, "\t" + call, G_CLOSE]
+    lines = lines[:bi+1] + call_block + lines[bi+1:]
+    lines = lines[:si] + extern_block + lines[si:]
+    with open(full, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines))
+    print("[+] injected: " + path + "  (" + call_sym + ")"); return True
+
+ok = True
+for path, sig, ext, call in HOOKS:
+    if not inject(path, sig, ext, call):
+        ok = False
+if not ok:
+    print("[X] some hooks failed to inject"); sys.exit(1)
+print("[OK] all 7 SUSFS call sites injected")
+PYEOF
+          python3 apply_ksu_hooks.py
+
       - name: Build Kernel
         working-directory: device_kernel
-        env:
-          args: |
-            LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu-
-            CROSS_COMPILE_ARM32=arm-linux-gnueabi- CROSS_COMPILE_COMPAT=arm-linux-gnueabi-
-            CC=clang LD=ld.lld HOSTLD=ld.lld O=out KCFLAGS+=-O2 KCFLAGS_PERF+=-O3
         run: |
           export PATH=/usr/lib/ccache:$GITHUB_WORKSPACE/toolchain/bin:$PATH
-          make -j$(nproc --all) ${args} ares_user_defconfig all
+          export LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu-
+          export CROSS_COMPILE_ARM32=arm-linux-gnueabi- CROSS_COMPILE_COMPAT=arm-linux-gnueabi-
+          export CC=clang LD=ld.lld HOSTLD=ld.lld O=out
+          export KCFLAGS+=-O2 KCFLAGS_PERF+=-O3
+          make -j$(nproc --all) ares_user_defconfig all
 
       - name: Pack Kernel using AnyKernel3
         working-directory: device_kernel
@@ -132,7 +211,8 @@ jobs:
           if [ -f "$IMAGE_DIR/Image.gz-dtb" ]; then cp -fp "$IMAGE_DIR/Image.gz-dtb" tmp/; fi
           if [ -f "$IMAGE_DIR/Image" ]; then cp -fp "$IMAGE_DIR/Image" tmp/; fi
           if [ -f "$IMAGE_DIR/dtbo.img" ]; then cp -fp "$IMAGE_DIR/dtbo.img" tmp/; fi
-          cp -rp ./Anykernel3/* tmp/
+          cp -rp ./Anykernel3/* tmp/ 2>/dev/null || true
+          cp -rp ./KernelSU/AnyKernel3/* tmp/ 2>/dev/null || true
           cd tmp
           7za a -mx9 tmp.zip *
           cd ..
@@ -144,7 +224,14 @@ jobs:
           tar -xvf boot.tar.gz
           chmod +x magiskboot
           ./magiskboot unpack boot.img
-          cp $GITHUB_WORKSPACE/device_kernel/out/arch/arm64/boot/Image ./kernel
+          KDIR=$GITHUB_WORKSPACE/device_kernel/out/arch/arm64/boot
+          if [ -f "$KDIR/Image" ]; then
+            cp -fp "$KDIR/Image" ./kernel
+          elif [ -f "$KDIR/Image.gz-dtb" ]; then
+            cp -fp "$KDIR/Image.gz-dtb" ./kernel
+          else
+            echo "[!] no kernel image produced"; ls -la "$KDIR"; exit 1
+          fi
           ./magiskboot repack boot.img $GITHUB_WORKSPACE/boot_KSU_SUSFS_${{ env.KSUVER }}.img
 
       - name: Upload Artifacts
