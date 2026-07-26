@@ -1,8 +1,6 @@
 name: Build Kernel -- ReSukiSU + SUSFS on MiCode ares-r-oss (4.14.186)
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
     inputs:
       SUKISU_BRANCH:
@@ -137,9 +135,9 @@ jobs:
         working-directory: kernel
         env:
           args: |+
-          LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu-
-          CROSS_COMPILE_ARM32=arm-linux-gnueabi- CROSS_COMPILE_COMPAT=arm-linux-gnueabi-
-          CC=clang-14 LD=ld.lld-14 HOSTLD=ld.lld-14 O=out KCFLAGS+=-O2 KCFLAGS_PERF+=-O3
+            LLVM=1 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu-
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi- CROSS_COMPILE_COMPAT=arm-linux-gnueabi-
+            CC=clang-14 LD=ld.lld-14 HOSTLD=ld.lld-14 O=out KCFLAGS+=-O2 KCFLAGS_PERF+=-O3
         run: |
           export KBUILD_BUILD_TIMESTAMP=$(date)
           export PATH=/usr/lib/ccache:$PATH
