@@ -108,10 +108,8 @@ jobs:
       - name: Apply KernelPatch for SUSFS
         working-directory: kernel
         run: |
-          # 1) T-branch / tree-specific SUSFS patches FIRST, applied to the pristine 4.14.186
-          #    tree. These are the authoritative versions for ares T and must apply on a
-          #    clean tree (the upstream main patch's hunks for these files have drifted and
-          #    no longer match 4.14.186, which is why we no longer apply it first).
+          # 1) T-branch / tree-specific SUSFS patches FIRST on pristine 4.14.186 tree.
+          #    These are authoritative for ares T branch.
           patch -p1 < $GITHUB_WORKSPACE/Patches/susfs_patch_taskmmu.patch
           if [ "${{ inputs.SOURCECODE_BRANCH }}" = "T" ]; then
             patch -p1 < $GITHUB_WORKSPACE/Patches/susfs_patch_base.patch
@@ -120,11 +118,31 @@ jobs:
           elif [ "${{ inputs.SOURCECODE_BRANCH }}" = "U-dev" ]; then
             patch -p1 < $GITHUB_WORKSPACE/Patches/susfs_patch_newuname.patch
           fi
-          # 2) Main SUSFS core patch LAST: creates fs/susfs.c + headers and adds hooks to the
-          #    other files (Makefile, namei, namespace, open, cmdline, fd, proc_namespace,
-          #    stat, statfs, kallsyms, sys, memory, avc). Its hunks for the 4 tree-specific
-          #    files above will fail harmlessly (already applied by the T-branch patches).
-          patch -p1 < $GITHUB_WORKSPACE/susfs_patch/Patches/Patch/susfs_patch_to_4.14.patch || true
+          # 2) Preprocess main SUSFS patch: strip hunks for files already handled by
+          #    T-branch patches above (base.c, task_mmu.c, fdinfo.c, readdir.c).
+          #    The main patch's hunks for these 4 files have drifted and conflict with
+          #    T-branch; stripping them avoids partial-application that leaves broken
+          #    code (undeclared identifiers like 'vma', missing BIT_SUS_MAPS macro).
+          python3 - <<'PY'
+import re
+patch_path = '$GITHUB_WORKSPACE/susfs_patch/Patches/Patch/susfs_patch_to_4.14.patch'
+# Files handled by T-branch patches — strip their diff blocks from main patch
+skip_files = {'fs/proc/base.c', 'fs/proc/task_mmu.c', 'fs/notify/fdinfo.c', 'fs/readdir.c'}
+with open(patch_path, 'r') as f:
+            content = f.read()
+# Remove diff blocks for skipped files: from 'diff --git a/FILE' to next 'diff --git' or EOF
+for sf in sorted(skip_files):
+            content = re.sub(
+                r'diff --git a/' + re.escape(sf) + r'.*?(?=diff --git a/|\Z)',
+                '', content, flags=re.DOTALL)
+with open(patch_path, 'w') as f:
+            f.write(content)
+print('Stripped overlapping file sections from main SUSFS patch')
+PY
+          # 3) Apply cleaned-up main SUSFS core patch (creates fs/susfs.c + headers +
+          #    hooks in Makefile/namei/namespace/open/cmdline/fd/proc_namespace/stat/
+          #    statfs/kallsyms/sys/memory/avc). No || true needed — should be clean.
+          patch -p1 < $GITHUB_WORKSPACE/susfs_patch/Patches/Patch/susfs_patch_to_4.14.patch
 
       - name: Copy defconfig
         run: |
