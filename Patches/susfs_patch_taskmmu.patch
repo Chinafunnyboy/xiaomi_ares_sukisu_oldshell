@@ -1,11 +1,11 @@
 From d58fc504e2fe0d7e45e314e4410bded2bc0bd7ce Mon Sep 17 00:00:00 2001
 From: MerCuJerry <mercujerry@gmail.com>
 Date: Mon, 9 Mar 2026 10:22:18 +0800
-Subject: [PATCH] susfs_patch_taskmmu
+Subject: [PATCH] susfs_patch_taskmmu (ported to new SUSFS API: SUSFS_IS_INODE_SUS_MAP)
 
 ---
- fs/proc/task_mmu.c | 39 +++++++++++++++++++++++++++++++++++++++
- 1 file changed, 39 insertions(+)
+ fs/proc/task_mmu.c | 13 ++++++-------
+ 1 file changed, 6 insertions(+), 7 deletions(-)
 
 diff --git a/fs/proc/task_mmu.c b/fs/proc/task_mmu.c
 index c4fe90e4f499..3d672bd22901 100644
@@ -21,16 +21,14 @@ index c4fe90e4f499..3d672bd22901 100644
  #include <asm/elf.h>
  #include <asm/tlb.h>
  #include <asm/tlbflush.h>
-@@ -879,6 +882,23 @@ static int show_smap(struct seq_file *m, void *v)
+@@ -879,6 +882,20 @@ static int show_smap(struct seq_file *m, void *v)
  		seq_print_vma_name(m, vma);
  		seq_putc(m, '\n');
  	}
 +#ifdef CONFIG_KSU_SUSFS_SUS_MAP
 +	if (vma->vm_file) {
 +		struct inode *inode = file_inode(vma->vm_file);
-+		if (inode->i_mapping &&
-+			unlikely(test_bit(AS_FLAGS_SUS_MAP, &inode->i_mapping->flags) &&
-+			susfs_is_current_proc_umounted_app()))
++		if (unlikely(SUSFS_IS_INODE_SUS_MAP(inode)))
 +		{
 +			seq_printf(m,
 +				"Size:           %8lu kB\n"
@@ -45,7 +43,7 @@ index c4fe90e4f499..3d672bd22901 100644
  
  	seq_printf(m,
  		   "Size:           %8lu kB\n"
-@@ -888,11 +908,30 @@ static int show_smap(struct seq_file *m, void *v)
+@@ -888,11 +905,19 @@ static int show_smap(struct seq_file *m, void *v)
  		   vma_kernel_pagesize(vma) >> 10,
  		   vma_mmu_pagesize(vma) >> 10);
  
@@ -57,9 +55,7 @@ index c4fe90e4f499..3d672bd22901 100644
 +#ifdef CONFIG_KSU_SUSFS_SUS_MAP
 +	if (vma->vm_file) {
 +		struct inode *inode = file_inode(vma->vm_file);
-+		if (inode->i_mapping &&
-+			unlikely(test_bit(AS_FLAGS_SUS_MAP, &inode->i_mapping->flags) &&
-+			susfs_is_current_proc_umounted_app()))
++		if (unlikely(SUSFS_IS_INODE_SUS_MAP(inode)))
 +		{
 +			seq_puts(m, "VmFlags: mr mw me");
 +			seq_putc(m, '\n');
@@ -78,4 +74,3 @@ index c4fe90e4f499..3d672bd22901 100644
  	return 0;
 -- 
 2.53.0
-
