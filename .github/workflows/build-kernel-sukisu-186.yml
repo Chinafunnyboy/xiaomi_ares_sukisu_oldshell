@@ -129,6 +129,14 @@ jobs:
           sed -i 's#--prefix=$(GCC_TOOLCHAIN_DIR)#--prefix=/usr#' Makefile
           sed -i 's#--gcc-toolchain=$(GCC_TOOLCHAIN)#--gcc-toolchain=/usr#' Makefile
           grep -n 'CLANG_FLAGS.*--prefix\|CLANG_FLAGS.*gcc-toolchain' Makefile || true
+          # Disable per-subdirectory -Werror (e.g. mm/Makefile line 6:
+          #   subdir-ccflags-y += -Werror).
+          # These subdir flags are appended to the compile command AFTER $(KCFLAGS),
+          # so they override our KCFLAGS+=-Wno-error and turn SUSFS-patch-induced
+          # unused-variable warnings (e.g. mm/vmscan.c 'nid') into hard errors.
+          # Remove only the bare -Werror additions; leave CLANG_FLAGS' -Werror=xxx
+          # (specific warning promotions like -Werror=implicit-int) intact.
+          find . -name Makefile -exec sed -i -E '/^[[:space:]]*(subdir-)?ccflags-[^[:space:]]*[[:space:]]*\+=[[:space:]]*-Werror[[:space:]]*$/d' {} +
           # NOTE: task_mmu.c (maps hide) and fdinfo.c (fd hide) sections are stripped above
           # because they fail to apply on 4.14.186. They are advanced SUSFS features not
           # enabled in the defconfig and not needed for core file/process hiding.
