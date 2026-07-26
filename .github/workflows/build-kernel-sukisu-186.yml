@@ -1,27 +1,22 @@
-name: Build Kernel -- SukiSU with susfs (ares 4.14.186 / T branch)
+name: Build Kernel -- K40GE KernelSU/SukiSU with SUSFS (ares 4.14.186 / T)
 
 on:
   workflow_dispatch:
     inputs:
-      enable_feature_kpm:
-        description: "是否启用kpm (需要开启susfs)"
-        required: false
-        default: false
-        type: boolean
       SOURCECODE_BRANCH:
-        description: '源码分支名称或修订版'
+        description: 'Kernel source branch'
         required: true
         default: 'T'
         type: string
-      SUKISU_BRANCH:
-        description: 'ReSukiSU 分支名称或修订版'
+      KERNELSU_BRANCH:
+        description: 'KernelSU branch (rsuntk susfs-main has SUSFS built-in)'
         required: true
-        default: 'main'
+        default: 'staging/susfs-main'
         type: string
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     env:
       CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
       CCACHE_NOHASHDIR: "true"
@@ -43,7 +38,7 @@ jobs:
           remove-codeql: 'true'
 
       - name: Install Package
-        run: sudo apt update && sudo apt install -y p7zip-full git ccache
+        run: sudo apt update && sudo apt install -y p7zip-full git ccache build-essential flex bison libssl-dev libelf-dev bc python3
 
       - name: Restore ccache
         uses: actions/cache@v4
@@ -53,92 +48,64 @@ jobs:
           restore-keys: |
             ccache-${{ runner.os }}-
 
-      - name: Checkout build assets (Patches + Magiskboot) from MerCuJerry/xiaomi_ares_sukisu
-        uses: actions/checkout@v5
+      - name: Checkout build assets (Patches + Magiskboot/boot.tar.gz) from MerCuJerry
+        uses: actions/checkout@v4
         with:
           repository: MerCuJerry/xiaomi_ares_sukisu
           ref: main
 
-      - name: Get Kernel Source Code (ares 4.14.186 clean tree)
-        uses: actions/checkout@v5
+      - name: Get Kernel Source Code (Tkpointz/android_kernel_aresin @ T, 4.14.186)
+        uses: actions/checkout@v4
         with:
-          repository: MerCuJerry/android_kernel_aresin
+          repository: Tkpointz/android_kernel_aresin
           ref: ${{ inputs.SOURCECODE_BRANCH }}
           path: kernel
-      
-      - name: Setup Cross-compile toolchain
+
+      - name: Setup Cross-compile toolchain (Mandi-Sa clang 23 static, proven to compile ares 4.14)
         run: |
           mkdir -p toolchain
           cd toolchain
           wget -q https://github.com/Mandi-Sa/clang/releases/download/amd64-kernel-arm_static-23/llvm23.0.0-binutils2.45.1_amd64-kernel-arm_static-20260224.7z
           7za x llvm23.0.0-binutils2.45.1_amd64-kernel-arm_static-20260224.7z
           rm llvm23.0.0-binutils2.45.1_amd64-kernel-arm_static-20260224.7z
-      
-      - name: Set up ReSukiSU
+
+      - name: Set up KernelSU (rsuntk/KernelSU staging/susfs-main, SUSFS built-in core)
         working-directory: kernel
         run: |
           echo DATE=$(date +%F) >> $GITHUB_ENV
-          export BRANCH=${{ inputs.SUKISU_BRANCH }}
-          curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash -s $BRANCH
+          curl -sSL "https://raw.githubusercontent.com/rsuntk/KernelSU/refs/heads/main/kernel/setup.sh" | bash -s ${{ inputs.KERNELSU_BRANCH }}
           cd ./KernelSU
-          export KSU_VERSION=$(expr $(/usr/bin/git rev-list --count main) "+" 30000 "+" 700)
-          echo "KSUVER=$KSU_VERSION" >> $GITHUB_ENV
-          sed -i "s/DKSU_VERSION=12800/DKSU_VERSION=${KSU_VERSION}/" kernel/Makefile
+          KSU_VER=$(expr $(/usr/bin/git rev-list --count HEAD) + 10200)
+          echo "KSUVER=$KSU_VER" >> $GITHUB_ENV
 
-      - name: Get SukiSU Patches
-        uses: actions/checkout@v5
-        with:
-          repository: SukiSU-Ultra/SukiSU_patch
-          path: sukisu_patch
-
-      - name: Get susfs patch
-        uses: actions/checkout@v5
-        with:
-          repository: JackA1ltman/NonGKI_Kernel_Build_2nd
-          sparse-checkout: Patches/Patch
-          ref: mainline
-          path: susfs_patch
-
-      - name: Patch Kernel
+      - name: Apply SUSFS (simonpunk/susfs4ksu @ kernel-4.14, file copy - no patch hunk conflicts)
         working-directory: kernel
         run: |
-          patch -p1 < $GITHUB_WORKSPACE/Patches/susfs-syscall-hooks.patch
-          patch -p1 < $GITHUB_WORKSPACE/Patches/static-symbol-export.patch
+          git clone --depth=1 -b kernel-4.14 https://gitlab.com/simonpunk/susfs4ksu.git susfs4ksu
+          cp susfs4ksu/kernel_patches/fs/* fs/
+          cp susfs4ksu/kernel_patches/include/linux/* include/linux/
 
-      - name: Apply KernelPatch for SUSFS
-        working-directory: kernel
+      - name: Append KSU/SUSFS config to defconfig
         run: |
-          # 1) T-branch / tree-specific SUSFS patches FIRST on pristine 4.14.186 tree.
-          #    These are ported to the current SUSFS API (SUSFS_IS_INODE_SUS_MAP macro
-          #    instead of the old BIT_SUS_MAPS / i_mapping->flags API) so they match the
-          #    main patch that follows.
-          patch -p1 < $GITHUB_WORKSPACE/Patches/susfs_patch_taskmmu.patch
-          if [ "${{ inputs.SOURCECODE_BRANCH }}" = "T" ]; then
-            patch -p1 < $GITHUB_WORKSPACE/Patches/susfs_patch_base.patch
-            patch -p1 < $GITHUB_WORKSPACE/Patches/susfs_patch_fdinfo.patch
-            patch -p1 < $GITHUB_WORKSPACE/Patches/susfs_patch_readdir.patch
-          elif [ "${{ inputs.SOURCECODE_BRANCH }}" = "U-dev" ]; then
-            patch -p1 < $GITHUB_WORKSPACE/Patches/susfs_patch_newuname.patch
-          fi
-          # 2) Main SUSFS core patch LAST with || true. Its hunks for the 4 tree-specific
-          #    files (base.c/task_mmu.c/fdinfo.c/readdir.c) fail harmlessly because
-          #    T-branch already handled them; all other files (fs/susfs.c, headers,
-          #    Makefile, namei, namespace, open, cmdline, fd, proc_namespace, stat,
-          #    statfs, kallsyms, sys, memory, avc) apply normally.
-          patch -p1 < $GITHUB_WORKSPACE/susfs_patch/Patches/Patch/susfs_patch_to_4.14.patch || true
-          # 3) Ensure fdinfo.c (and base.c as safety) include linux/susfs_def.h so the
-          #    SUSFS_IS_INODE_SUS_MAP macro / susfs_is_current_proc_umounted are declared.
-          python3 $GITHUB_WORKSPACE/scripts/fix_susfs_includes.py
+          DEF=$GITHUB_WORKSPACE/kernel/arch/arm64/configs/ares_user_defconfig
+          echo "CONFIG_KSU=y" >> $DEF
+          echo "CONFIG_KSU_MANUAL_HOOK=y" >> $DEF
+          echo "CONFIG_KSU_SUSFS=y" >> $DEF
+          echo "CONFIG_KSU_SUSFS_HAS_MAGIC_MOUNT=y" >> $DEF
+          echo "CONFIG_KSU_SUSFS_SUS_PATH=y" >> $DEF
+          echo "CONFIG_KSU_SUSFS_SUS_MOUNT=y" >> $DEF
+          echo "CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT=y" >> $DEF
+          echo "CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT=y" >> $DEF
+          echo "CONFIG_KSU_SUSFS_SUS_KSTAT=y" >> $DEF
+          echo "CONFIG_KSU_SUSFS_TRY_UMOUNT=y" >> $DEF
+          echo "CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT=y" >> $DEF
+          echo "CONFIG_KSU_SUSFS_SPOOF_UNAME=y" >> $DEF
+          echo "CONFIG_KSU_SUSFS_ENABLE_LOG=y" >> $DEF
+          echo "CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS=y" >> $DEF
+          echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y" >> $DEF
+          echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y" >> $DEF
+          echo "appended KSU/SUSFS config to $DEF"
 
-      - name: Copy defconfig
-        run: |
-          if [ "${{ inputs.enable_feature_kpm }}" = "true" ]; then
-            echo "CONFIG_KALLSYMS_ALL=y" >> $GITHUB_WORKSPACE/Patches/ares_user_defconfig_append
-            echo "CONFIG_KPM=y" >> $GITHUB_WORKSPACE/Patches/ares_user_defconfig_append
-          fi
-          echo "CONFIG_KSU_MANUAL_HOOK=y" >> $GITHUB_WORKSPACE/Patches/ares_user_defconfig_append
-          cat $GITHUB_WORKSPACE/Patches/ares_user_defconfig_append >> $GITHUB_WORKSPACE/kernel/arch/arm64/configs/ares_user_defconfig
-      
       - name: Build Kernel for K40GE
         working-directory: kernel
         env:
@@ -147,27 +114,17 @@ jobs:
             CROSS_COMPILE_ARM32=arm-linux-gnueabi- CROSS_COMPILE_COMPAT=arm-linux-gnueabi-
             CC=clang LD=ld.lld HOSTLD=ld.lld O=out KCFLAGS+=-O2 KCFLAGS_PERF+=-O3
         run: |
-          export KBUILD_BUILD_TIMESTAMP=$(date)
           export PATH=/usr/lib/ccache:$GITHUB_WORKSPACE/toolchain/bin:$PATH
           make -j$(nproc --all) ${args} ares_user_defconfig all
-      
-      - name: Apply KernelPatch for KPM
-        if: ${{ inputs.enable_feature_kpm }}
-        working-directory: kernel/out/arch/arm64/boot
-        run: |
-          cp $GITHUB_WORKSPACE/sukisu_patch/kpm/patch_linux .
-          chmod +x patch_linux
-          ./patch_linux
-          mv oImage Image
 
       - name: Pack Kernel using Magiskboot
         working-directory: Magiskboot
         run: |
-            tar -xvf boot.tar.gz
-            chmod +x magiskboot
-            ./magiskboot unpack boot.img
-            cp $GITHUB_WORKSPACE/kernel/out/arch/arm64/boot/Image ./kernel
-            ./magiskboot repack boot.img boot_SukiSU_${{ env.KSUVER }}.img
+          tar -xvf boot.tar.gz
+          chmod +x magiskboot
+          ./magiskboot unpack boot.img
+          cp $GITHUB_WORKSPACE/kernel/out/arch/arm64/boot/Image ./kernel
+          ./magiskboot repack boot.img boot_SukiSU_${{ env.KSUVER }}.img
 
       - name: Upload repacked boot image
         uses: actions/upload-artifact@v4
