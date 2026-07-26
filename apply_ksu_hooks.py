@@ -5,7 +5,7 @@
 # NOTE: we do NOT use ksu_init_rc_hook / ksu_input_hook (those are forbidden in the
 #       SUSFS inline path by inline_hook_check.mk). The handlers internally check
 #       KSU readiness, so an unconditional call is safe.
-import os, sys
+import os, sys, re
 
 ROOT = os.getcwd()
 
@@ -51,7 +51,12 @@ def inject(path, sig, extern_decl, call):
     with open(full, "r", encoding="utf-8", errors="replace") as f:
         lines = f.read().split("\n")
     # idempotency: if the call symbol already present, skip
-    call_sym = call.split("(")[0].strip()
+    # robustly extract the ksu_handle_* symbol (call may start with a cast like "(void)")
+    m = re.search(r"ksu_handle_\w+", call)
+    call_sym = m.group(0) if m else call.split("(")[0].strip()
+    if not call_sym:
+        print(f"[!] could not derive symbol from call: {call!r}")
+        return False
     for ln in lines:
         if call_sym in ln:
             print(f"[=] already present, skip: {path} ({call_sym})")
