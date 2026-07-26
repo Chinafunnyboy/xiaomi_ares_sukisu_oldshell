@@ -1,4 +1,4 @@
-name: Build Kernel -- K40GE (ares) KernelSU-Next + SUSFS (4.14.186 / U-dev)
+name: Build Kernel -- K40GE (ares) KernelSU + SUSFS (4.14.186 / U-dev)
 
 on:
   workflow_dispatch:
@@ -31,7 +31,7 @@ jobs:
       - name: Install necessary packages
         run: |
           sudo apt-get update
-          sudo apt-get install -y git ccache automake flex lzop bison gperf build-essential zip curl zlib1g-dev g++-multilib libxml2-utils bzip2 libbz2-dev libbz2-1.0 squashfs-tools pngcrush schedtool dpkg-dev make optipng maven libssl-dev pwgen libswitch-perl policycoreutils minicom libxml-sax-base-perl libxml-simple-perl bc libc6-dev-i386 libx11-dev lib32z-dev libgl1-mesa-dev xsltproc unzip device-tree-compiler python3 zstd libc6 binutils libc6-dev-i386 gcc g++ p7zip p7zip-full
+          sudo apt-get install -y git ccache automake flex lzop bison gperf build-essential zip curl zlib1g-dev g++-multilib libxml2-utils bzip2 libbz2-dev libbz2-1.0 squashfs-tools pngcrush schedtool dpkg-dev make optipng maven libssl-dev pwgen libswitch-perl policycoreutils minicom libxml-sax-base-perl libxml-simple-perl bc libc6-dev-i386 libx11-dev lib32z-dev libgl1-mesa-dev xsltproc unzip device-tree-compiler python3 zstd libc6 binutils libc6-dev-i386 gcc g++ p7zip p7zip-full binutils-aarch64-linux-gnu binutils-arm-linux-gnueabi
 
       - name: Checkout build assets (MerCuJerry Magiskboot base for ares)
         uses: actions/checkout@v4
@@ -46,8 +46,8 @@ jobs:
           echo "KERNEL_VERSION=$(head -n 3 device_kernel/Makefile | grep -E 'VERSION|PATCHLEVEL' | awk '{print $3}' | paste -sd '.')" >> $GITHUB_ENV
 
       - name: Set KSU and SUSFS for DEFCONFIG
+        working-directory: device_kernel
         run: |
-          cd $GITHUB_WORKSPACE/device_kernel
           DEF=./arch/arm64/configs/ares_user_defconfig
           echo "CONFIG_KSU=y" >> $DEF
           echo "CONFIG_KSU_SUSFS=y" >> $DEF
@@ -66,25 +66,16 @@ jobs:
           echo "CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG=y" >> $DEF
           echo "CONFIG_KSU_SUSFS_OPEN_REDIRECT=y" >> $DEF
 
-      - name: Set KernelSU-Next (with SUSFS, manual hook for non-GKI 4.14)
+      - name: Set AnyKernel3 + KernelSU + SUSFS sources
         working-directory: device_kernel
         run: |
-          git clone https://github.com/rifsxd/KernelSU-Next.git -b next KernelSU-Next
-          ln -sf "$(realpath --relative-to="$(pwd)/drivers" "$(pwd)/KernelSU-Next/kernel")" "kernelsu"
+          git clone https://github.com/osm0sis/AnyKernel3.git -b master Anykernel3 --depth=1
+          git clone https://github.com/KernelSU/KernelSU.git -b main KernelSU
+          ln -sf "$(realpath --relative-to="$(pwd)/drivers" "$(pwd)/KernelSU/kernel")" "kernelsu"
           grep -q "kernelsu" "$(pwd)/drivers/Makefile" || printf "\nobj-\$(CONFIG_KSU) += kernelsu/\n" >> "$(pwd)/drivers/Makefile"
           grep -q "source \"drivers/kernelsu/Kconfig\"" "$(pwd)/drivers/Kconfig" || sed -i "/endmenu/i\source \"drivers/kernelsu/Kconfig\"" "$(pwd)/drivers/Kconfig"
-          # SUSFS-enabled variant of KernelSU-Next
-          git clone https://github.com/rifsxd/KernelSU-Next.git -b next-susfs susfs_fixed
-          rsync -av --exclude='.git' susfs_fixed/kernel/ KernelSU-Next/kernel/
-          # Force manual hook (non-GKI 4.14 reliable path) so patches.sh ksu_handle_* calls are valid
-          sed -i 's/# CONFIG_KSU_MANUAL_HOOK is not set/CONFIG_KSU_MANUAL_HOOK=y/' ./arch/arm64/configs/ares_user_defconfig || true
-          echo "CONFIG_KSU_MANUAL_HOOK=y" >> ./arch/arm64/configs/ares_user_defconfig
-          KSU_VERSION=$(cd KernelSU-Next && expr $(/usr/bin/git rev-list --count HEAD) + 10200)
+          KSU_VERSION=$(cd KernelSU && expr $(/usr/bin/git rev-list --count HEAD) + 10200)
           echo "KSUVER=$KSU_VERSION" >> $GITHUB_ENV
-
-      - name: Set SUSFS kernel-side (simonpunk official 4.14)
-        working-directory: device_kernel
-        run: |
           git clone https://gitlab.com/simonpunk/susfs4ksu.git -b kernel-${KERNEL_VERSION} susfs4ksu --depth=1
           cp susfs4ksu/kernel_patches/fs/* fs/
           cp susfs4ksu/kernel_patches/include/linux/* include/linux/
@@ -96,11 +87,15 @@ jobs:
           cp NonGKI_Kernel_Patches/patches.sh ./
           bash patches.sh
 
-      - name: Patch Kernel of SUSFS (feature code)
+      - name: Patch Kernel of SUSFS (feature code + KSU-side enable)
         working-directory: device_kernel
         run: |
           cp susfs4ksu/kernel_patches/50_add_susfs_in_kernel-${KERNEL_VERSION}.patch ./
           patch -p1 < 50_add_susfs_in_kernel-${KERNEL_VERSION}.patch || true
+          cp susfs4ksu/kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch ./KernelSU/
+          cd KernelSU
+          patch -p1 < 10_enable_susfs_for_ksu.patch || true
+          cd ..
 
       - name: Fixed Kernel Patch (ares / K40G HyperOS device-specific)
         working-directory: device_kernel
@@ -132,7 +127,6 @@ jobs:
       - name: Pack Kernel using AnyKernel3
         working-directory: device_kernel
         run: |
-          git clone https://github.com/osm0sis/AnyKernel3.git -b master Anykernel3 --depth=1
           IMAGE_DIR=out/arch/arm64/boot
           mkdir -p tmp
           if [ -f "$IMAGE_DIR/Image.gz-dtb" ]; then cp -fp "$IMAGE_DIR/Image.gz-dtb" tmp/; fi
@@ -142,7 +136,7 @@ jobs:
           cd tmp
           7za a -mx9 tmp.zip *
           cd ..
-          cp -fp tmp/tmp.zip $GITHUB_WORKSPACE/K40GE_KSUNEXT_SUSFS_${{ env.KSUVER }}.zip
+          cp -fp tmp/tmp.zip $GITHUB_WORKSPACE/K40GE_KSU_SUSFS_${{ env.KSUVER }}.zip
 
       - name: Pack boot.img using Magiskboot (MerCuJerry base for ares)
         working-directory: assets/Magiskboot
@@ -151,13 +145,13 @@ jobs:
           chmod +x magiskboot
           ./magiskboot unpack boot.img
           cp $GITHUB_WORKSPACE/device_kernel/out/arch/arm64/boot/Image ./kernel
-          ./magiskboot repack boot.img $GITHUB_WORKSPACE/boot_KSUNEXT_SUSFS_${{ env.KSUVER }}.img
+          ./magiskboot repack boot.img $GITHUB_WORKSPACE/boot_KSU_SUSFS_${{ env.KSUVER }}.img
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: K40GE_KSUNEXT_SUSFS_${{ env.KSUVER }}
+          name: K40GE_KSU_SUSFS_${{ env.KSUVER }}
           path: |
-            K40GE_KSUNEXT_SUSFS_${{ env.KSUVER }}.zip
-            boot_KSUNEXT_SUSFS_${{ env.KSUVER }}.img
+            K40GE_KSU_SUSFS_${{ env.KSUVER }}.zip
+            boot_KSU_SUSFS_${{ env.KSUVER }}.img
           compression-level: 9
