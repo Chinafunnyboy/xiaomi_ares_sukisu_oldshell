@@ -87,25 +87,27 @@ jobs:
       - name: Patch Kernel (SUSFS for 4.14.186)
         working-directory: kernel
         run: |
-          # Strip the task_mmu.c block: it targets a newer 4.14.x task_mmu.c and
-          # 4 of 9 hunks fail on MiCode 4.14.186. The task_mmu.c SUSFS hooks only
-          # hide /proc/PID/maps (advanced); core fs hiding still works without it.
+          # Strip sections that don't match MiCode 4.14.186 (they target newer 4.14.x):
+          #  - fs/proc/task_mmu.c : 4/9 hunks fail -> SUS_MAP (/proc/PID/maps hide), advanced
+          #  - fs/notify/fdinfo.c  : 1/4 hunks fail -> SUS_FD (/proc/PID/fd hide), advanced
+          # Both features are NOT enabled in ares_user_defconfig_append, so stripping them is
+          # safe; core SUSFS (open/exec/stat/mount/path/kstat) still applies fully.
           python3 - <<'PY'
           import re, os
           ws = os.environ['GITHUB_WORKSPACE']
           p = os.path.join(ws, 'susfs_patch', 'Patches', 'Patch', 'susfs_patch_to_4.14.patch')
           t=open(p).read()
           t=re.sub(r"diff --git a/fs/proc/task_mmu\.c.*?(?=diff --git a/|\Z)", "", t, flags=re.S)
+          t=re.sub(r"diff --git a/fs/notify/fdinfo\.c.*?(?=diff --git a/|\Z)", "", t, flags=re.S)
           open(p,'w').write(t)
-          print('stripped task_mmu.c section from susfs_patch_to_4.14.patch')
+          print('stripped task_mmu.c + fdinfo.c sections from susfs_patch_to_4.14.patch')
           PY
           patch -p1 < $GITHUB_WORKSPACE/Patches/susfs-syscall-hooks.patch
           patch -p1 < $GITHUB_WORKSPACE/Patches/static-symbol-export.patch
           patch -p1 < $GITHUB_WORKSPACE/susfs_patch/Patches/Patch/susfs_patch_to_4.14.patch
-          # NOTE: susfs_patch_taskmmu.patch (task_mmu.c) and susfs_patch_newuname.patch
-          # (kernel/sys.c) are intentionally skipped: both fail to apply on 4.14.186
-          # and are advanced SUSFS features (maps hiding / uname spoof) not needed
-          # for core file/process hiding.
+          # NOTE: task_mmu.c (maps hide) and fdinfo.c (fd hide) sections are stripped above
+          # because they fail to apply on 4.14.186. They are advanced SUSFS features not
+          # enabled in the defconfig and not needed for core file/process hiding.
 
       - name: Copy defconfig
         run: |
