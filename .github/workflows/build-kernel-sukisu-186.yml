@@ -112,6 +112,11 @@ jobs:
       - name: Copy defconfig
         run: |
           echo "CONFIG_KSU_MANUAL_HOOK=y" >> $GITHUB_WORKSPACE/Patches/ares_user_defconfig_append
+          # Disable CC_STACKPROTECTOR_STRONG: the clang-23 static toolchain fails the
+          # kernel's -fstack-protector-strong compiler check ("not supported by compiler").
+          # NONE is a safe alternative; no effect on SUSFS / root / detection passing.
+          echo "CONFIG_CC_STACKPROTECTOR_STRONG=n" >> $GITHUB_WORKSPACE/Patches/ares_user_defconfig_append
+          echo "CONFIG_CC_STACKPROTECTOR_NONE=y" >> $GITHUB_WORKSPACE/Patches/ares_user_defconfig_append
           cat $GITHUB_WORKSPACE/Patches/ares_user_defconfig_append >> $GITHUB_WORKSPACE/kernel/arch/arm64/configs/ares_user_defconfig
 
       - name: Build Kernel for K40GE (186)
