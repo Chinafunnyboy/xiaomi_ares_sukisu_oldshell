@@ -116,7 +116,19 @@ jobs:
           # We intentionally KEEP the kernel's default "-no-integrated-as" so clang offloads
           # assembly to the external aarch64-linux-gnu-as (binutils GAS, installed via apt).
           # Clang 14 + binutils GAS handles the 4.14 VDSO gettimeofday.S macro that modern clang's
-          # integrated assembler rejects ("too many positional arguments"). No sed needed here.
+          # integrated assembler rejects ("too many positional arguments").
+          #
+          # FIX clang cross-assembler lookup: 4.14's Makefile sets
+          #   CLANG_FLAGS += --prefix=$(GCC_TOOLCHAIN_DIR)   # GCC_TOOLCHAIN_DIR = /usr/bin/
+          # clang then searches <prefix>/bin for the assembler -> /usr/bin/bin/aarch64-linux-gnu-as
+          # (does not exist) -> falls back to host /usr/bin/as, which rejects '-EL' and breaks
+          # scripts/mod/empty.o. Hardcode the toolchain root to /usr (Ubuntu 22.04 puts the
+          # cross binutils at /usr/bin/aarch64-linux-gnu-as) so clang finds the right assembler.
+          # We hardcode instead of using $(GCC_TOOLCHAIN) because that variable can be empty if
+          # `which aarch64-linux-gnu-elfedit` fails, which would leave --gcc-toolchain broken too.
+          sed -i 's#--prefix=$(GCC_TOOLCHAIN_DIR)#--prefix=/usr#' Makefile
+          sed -i 's#--gcc-toolchain=$(GCC_TOOLCHAIN)#--gcc-toolchain=/usr#' Makefile
+          grep -n 'CLANG_FLAGS.*--prefix\|CLANG_FLAGS.*gcc-toolchain' Makefile || true
           # NOTE: task_mmu.c (maps hide) and fdinfo.c (fd hide) sections are stripped above
           # because they fail to apply on 4.14.186. They are advanced SUSFS features not
           # enabled in the defconfig and not needed for core file/process hiding.
