@@ -146,9 +146,21 @@ jobs:
         run: |
             mkdir -p Magiskboot
             cd Magiskboot
-            echo "Downloading magiskboot binary..."
-            curl -L -o magiskboot https://github.com/xiaoxindada/magisk_bins_ndk/raw/master/magiskboot
-            chmod +x magiskboot
+            echo "Downloading official Magisk APK to extract magiskboot..."
+            curl -L -o Magisk.apk https://github.com/topjohnwu/Magisk/releases/download/v30.7/Magisk-v30.7.apk
+            unzip -j -o Magisk.apk assets/magiskboot64 -d . 2>/dev/null || unzip -j -o Magisk.apk assets/magiskboot -d . 2>/dev/null || { echo "Extracting from lib..."; unzip -j -o Magisk.apk 'lib/x86_64/*magiskboot*' -d . 2>/dev/null; }
+            # Fallback: if still not found, build minimal boot_patcher from Magisk source
+            if [ ! -f magiskboot ] || [ ! -s magiskboot ]; then
+              echo "Trying alternate extraction..."
+              unzip -l Magisk.apk | grep -i magiskboot
+              # Try any file containing magiskboot in name
+              for f in $(unzip -l Magisk.apk | awk '/magiskboot/{print $4}' | head -5); do
+                unzip -j -o Magisk.apk "$f" -d . 2>/dev/null && break
+              done
+            fi
+            chmod +x magiskboot 2>/dev/null
+            ls -la magiskboot
+            file magiskboot 2>/dev/null || true
             echo "Downloading stock boot.tar.gz for ares..."
             curl -L -o boot.tar.gz https://github.com/MerCuJerry/xiaomi_ares_sukisu/raw/main/Magiskboot/boot.tar.gz
             ls -la
