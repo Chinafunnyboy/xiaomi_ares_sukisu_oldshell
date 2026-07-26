@@ -105,6 +105,11 @@ jobs:
           patch -p1 < $GITHUB_WORKSPACE/Patches/susfs-syscall-hooks.patch
           patch -p1 < $GITHUB_WORKSPACE/Patches/static-symbol-export.patch
           patch -p1 < $GITHUB_WORKSPACE/susfs_patch/Patches/Patch/susfs_patch_to_4.14.patch
+          # Remove the 4.14-era "CLANG_FLAGS += -no-integrated-as" workaround (Makefile:497).
+          # Modern clang uses its built-in integrated assembler, which is exactly what we need
+          # since the toolchain ships no aarch64-linux-gnu-as (fixed the "as: unrecognized option
+          # '-EL'" failure). Without this, clang offloads assembly to external as and the build dies.
+          sed -i '/-no-integrated-as/d' Makefile
           # NOTE: task_mmu.c (maps hide) and fdinfo.c (fd hide) sections are stripped above
           # because they fail to apply on 4.14.186. They are advanced SUSFS features not
           # enabled in the defconfig and not needed for core file/process hiding.
